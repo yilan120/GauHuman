@@ -58,6 +58,7 @@ class ModelParams(ParamGroup):
         self.smpl_type = "smplx"
         self.actor_gender = "neutral"
         self.motion_offset_flag = False
+        self.motion_flag = False
         super().__init__(parser, "Loading Parameters", sentinel)
 
     def extract(self, args):

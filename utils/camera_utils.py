@@ -59,7 +59,7 @@ def loadCam(args, id, cam_info, resolution_scale):
     return Camera(colmap_id=cam_info.uid, pose_id=cam_info.pose_id, R=cam_info.R, T=cam_info.T, K=cam_info.K, 
                   FoVx=cam_info.FovX, FoVy=cam_info.FovY, 
                   image=gt_image, gt_alpha_mask=loaded_mask,
-                  image_name=cam_info.image_name, uid=id, bkgd_mask=resized_bkgd_mask, 
+                  image_path=cam_info.image_path, image_name=cam_info.image_name, uid=id, bkgd_mask=resized_bkgd_mask, 
                   bound_mask=resized_bound_mask, smpl_param=cam_info.smpl_param, 
                   world_vertex=cam_info.world_vertex, world_bound=cam_info.world_bound, 
                   big_pose_smpl_param=cam_info.big_pose_smpl_param, 

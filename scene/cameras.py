@@ -16,7 +16,7 @@ from utils.graphics_utils import getWorld2View2, getProjectionMatrix, getProject
 
 class Camera(nn.Module):
     def __init__(self, colmap_id, pose_id, R, T, K, FoVx, FoVy, image, gt_alpha_mask,
-                 image_name, uid,
+                 image_path, image_name, uid,
                  bkgd_mask=None, bound_mask=None, smpl_param=None, 
                  world_vertex=None, world_bound=None, big_pose_smpl_param=None,
                  big_pose_world_vertex=None, big_pose_world_bound=None,
@@ -35,6 +35,7 @@ class Camera(nn.Module):
         self.image_name = image_name
         self.bkgd_mask = bkgd_mask
         self.bound_mask = bound_mask
+        self.image_path = image_path
 
         try:
             self.data_device = torch.device(data_device)
@@ -43,6 +44,9 @@ class Camera(nn.Module):
             print(f"[Warning] Custom device {data_device} failed, fallback to default cuda device" )
             self.data_device = torch.device("cuda")
 
+        # print("Cameras.image: ", image)
+        # np_image = image.cpu().numpy()
+        # print("np.unique(np_image): ", np.unique(np_image))
         self.original_image = image.clamp(0.0, 1.0)#.to(self.data_device)
         self.image_width = self.original_image.shape[2]
         self.image_height = self.original_image.shape[1]
@@ -57,11 +61,14 @@ class Camera(nn.Module):
 
         self.trans = trans
         self.scale = scale
+        # TODO: check world_view_transform
+        # self.world_view_transform: wTc
         self.world_view_transform = torch.tensor(getWorld2View2(R, T, trans, scale)).transpose(0, 1).cuda()
         # self.projection_matrix = getProjectionMatrix(znear=self.znear, zfar=self.zfar, fovX=self.FoVx, fovY=self.FoVy).transpose(0,1).cuda()
         self.projection_matrix = getProjectionMatrix_refine(torch.Tensor(K).cuda(), self.image_height, self.image_width, self.znear, self.zfar).transpose(0, 1)
         self.full_proj_transform = (self.world_view_transform.unsqueeze(0).bmm(self.projection_matrix.unsqueeze(0))).squeeze(0)
         self.camera_center = self.world_view_transform.inverse()[3, :3]
+        # print("self.camera_center: ", self.camera_center)
 
         self.smpl_param = smpl_to_cuda(smpl_param, self.data_device)
         self.world_vertex = torch.tensor(world_vertex).to(self.data_device)

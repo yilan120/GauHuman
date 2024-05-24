@@ -10,10 +10,13 @@
 #
 
 import torch
+import numpy as np
+import cv2
 import math
 from diff_gaussian_rasterization import GaussianRasterizationSettings, GaussianRasterizer
 from scene.gaussian_model import GaussianModel
 from utils.sh_utils import eval_sh
+from utils.mano_utils import project3D_2_2D, mark_visible
 
 def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None, return_smpl_rot=False, transforms=None, translation=None):
     """
@@ -51,31 +54,57 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     rasterizer = GaussianRasterizer(raster_settings=raster_settings)
     means3D = pc.get_xyz
 
-    if not pc.motion_offset_flag:
-        _, means3D, _, transforms, _ = pc.coarse_deform_c2source(means3D[None], viewpoint_camera.smpl_param,
-            viewpoint_camera.big_pose_smpl_param,
-            viewpoint_camera.big_pose_world_vertex[None])
-    else:
-        if transforms is None:
-            # pose offset
-            dst_posevec = viewpoint_camera.smpl_param['poses'][:, 3:]
-            pose_out = pc.pose_decoder(dst_posevec)
-            correct_Rs = pose_out['Rs']
+    # Visualization
+    project3D_2_2D(means3D, viewpoint_camera, '0') 
 
-            # SMPL lbs weights
-            lbs_weights = pc.lweight_offset_decoder(means3D[None].detach())
-            lbs_weights = lbs_weights.permute(0,2,1)
+    # visibility = mark_visible(means3D.cpu().detach().numpy(), (viewpoint_camera.world_view_transform).cpu().numpy(), (viewpoint_camera.projection_matrix).cpu().numpy(), '0')
+    # print("Visibility_0:", visibility)
 
-            # transform points
-            _, means3D, _, transforms, translation = pc.coarse_deform_c2source(means3D[None], viewpoint_camera.smpl_param,
+    if pc.motion_flag:
+        # visibility = mark_visible(means3D.cpu().detach().numpy(), (viewpoint_camera.world_view_transform).cpu().numpy(), (viewpoint_camera.projection_matrix).cpu().numpy(), '0')
+        # print("Visibility:", visibility)
+        if not pc.motion_offset_flag:
+            _, means3D, _, transforms, _ = pc.coarse_deform_c2source(viewpoint_camera, means3D[None], viewpoint_camera.smpl_param,
                 viewpoint_camera.big_pose_smpl_param,
-                viewpoint_camera.big_pose_world_vertex[None], lbs_weights=lbs_weights, correct_Rs=correct_Rs, return_transl=return_smpl_rot)
+                viewpoint_camera.big_pose_world_vertex[None])
         else:
-            correct_Rs = None
-            means3D = torch.matmul(transforms, means3D[..., None]).squeeze(-1) + translation
+            if transforms is None:
+                # pose offset
+                # print("viewpoint_camera.smpl_param['poses'].shape")
+                dst_posevec = viewpoint_camera.smpl_param['poses'][:, 3:]
+                pose_out = pc.pose_decoder(dst_posevec)
+                correct_Rs = pose_out['Rs']
+
+                # SMPL lbs weights
+                lbs_weights = pc.lweight_offset_decoder(means3D[None].detach())
+                lbs_weights = lbs_weights.permute(0,2,1)
+
+                # transform points
+                s_means3D, w_means3D, _, transforms, translation = pc.coarse_deform_c2source(viewpoint_camera, means3D[None], viewpoint_camera.smpl_param,
+                    viewpoint_camera.big_pose_smpl_param,
+                    viewpoint_camera.big_pose_world_vertex[None], lbs_weights=lbs_weights, correct_Rs=correct_Rs, return_transl=return_smpl_rot)
+                means3D = s_means3D
+            else:
+                correct_Rs = None
+                means3D = torch.matmul(transforms, means3D[..., None]).squeeze(-1) + translation
+        means3D = means3D.squeeze()
+
+        # import ipdb; ipdb.set_trace()
+
+        # Visualization
+        project3D_2_2D(means3D, viewpoint_camera, '1') 
+        visibility = mark_visible(means3D.cpu().detach().numpy(), (viewpoint_camera.world_view_transform).cpu().numpy(), (viewpoint_camera.projection_matrix).cpu().numpy(), '1')
+        print("Visibility_1:", visibility)
+
+    # Visualization
+    # project3D_2_2D(means3D, viewpoint_camera, '1') 
 
 
-    means3D = means3D.squeeze()
+    # import ipdb; ipdb.set_trace()
+
+    # print("2: means3D: ", means3D)
+
+    # means3D = means3D.squeeze()
     means2D = screenspace_points
     opacity = pc.get_opacity
 
@@ -85,8 +114,11 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     rotations = None
     cov3D_precomp = None
     if pipe.compute_cov3D_python:
-        cov3D_precomp = pc.get_covariance(scaling_modifier, transforms.squeeze())
-        # cov3D_precomp = pc.get_covariance(scaling_modifier)
+        # cov3D_precomp = pc.get_covariance(scaling_modifier, transforms.squeeze())
+        if pc.motion_flag:
+            cov3D_precomp = pc.get_covariance(scaling_modifier, transforms.squeeze())
+        else:
+            cov3D_precomp = pc.get_covariance(scaling_modifier)
     else:
         scales = pc.get_scaling
         rotations = pc.get_rotation
@@ -107,6 +139,8 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     else:
         colors_precomp = override_color
 
+    
+
     # Rasterize visible Gaussians to image, obtain their radii (on screen). 
     rendered_image, radii, depth, alpha = rasterizer(
         means3D = means3D,
@@ -117,15 +151,30 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         scales = scales,
         rotations = rotations,
         cov3D_precomp = cov3D_precomp)
+    # import ipdb; ipdb.set_trace()
+
+    print("radii: ", radii)
 
     # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
     # They will be excluded from value updates used in the splitting criteria.
-    return {"render": rendered_image,
-            "render_depth": depth,
-            "render_alpha": alpha,
-            "viewspace_points": screenspace_points,
-            "visibility_filter" : radii > 0,
-            "radii": radii,
-            "transforms": transforms,
-            "translation": translation,
-            "correct_Rs": correct_Rs,}
+    if pc.motion_flag:
+        return {"render": rendered_image,
+                "render_depth": depth,
+                "render_alpha": alpha,
+                "viewspace_points": screenspace_points,
+                "visibility_filter" : radii > 0,
+                "radii": radii,
+                "transforms": transforms,
+                "translation": translation,
+                "correct_Rs": correct_Rs,
+                }
+    else:
+        return {"render": rendered_image,
+                "render_depth": depth,
+                "render_alpha": alpha,
+                "viewspace_points": screenspace_points,
+                "visibility_filter" : radii > 0,
+                "radii": radii,
+                "transforms": transforms,
+                "translation": translation
+                }

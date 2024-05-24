@@ -26,6 +26,7 @@ from tqdm import tqdm
 from utils.image_utils import psnr
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
+from utils.mano_utils import forwardKinematics, project_3D_points, showHandJoints
 try:
     from torch.utils.tensorboard import SummaryWriter
     TENSORBOARD_FOUND = True
@@ -38,10 +39,18 @@ loss_fn_vgg = lpips.LPIPS(net='vgg').to(torch.device('cuda', torch.cuda.current_
 import time
 import torch.nn.functional as F
 
+os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
+jointsMapManoToSimple = [0,
+                         13, 14, 15, 16,
+                         1, 2, 3, 17,
+                         4, 5, 6, 18,
+                         10, 11, 12, 19,
+                         7, 8, 9, 20]
+
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
-    gaussians = GaussianModel(dataset.sh_degree, dataset.smpl_type, dataset.motion_offset_flag, dataset.actor_gender)
+    gaussians = GaussianModel(dataset.sh_degree, dataset.smpl_type, dataset.motion_offset_flag, dataset.motion_flag, dataset.actor_gender)
     scene = Scene(dataset, gaussians)
     gaussians.training_setup(opt)
     if checkpoint:
@@ -109,6 +118,98 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         bkgd_mask = viewpoint_cam.bkgd_mask.cuda()
         bound_mask = viewpoint_cam.bound_mask.cuda()
         Ll1 = l1_loss(image.permute(1,2,0)[bound_mask[0]==1], gt_image.permute(1,2,0)[bound_mask[0]==1])
+
+
+        # handKps = project_3D_points(viewpoint_cam.K, viewpoint_cam.world_vertex, is_OpenGL_coords=True)
+        # test_image = (gt_image.clone().permute(1,2,0)*255)
+        # print("test_image:{}".format(test_image))
+        # print("test_image:{}".format(test_image.shape))
+        # imageio.imwrite('test_image.png', test_image.cpu().numpy().astype(np.uint8))
+        # print("viewpoint_cam.image_path:{}".format(viewpoint_cam.image_path))
+        # imgAnno = showHandJoints(test_image, handKps[jointsMapManoToSimple]) 
+        # imgAnno = imgAnno / imgAnno.max()
+        # print("imgAnno:{}".format(imgAnno.shape))
+        # print("imgAnno.max():{}".format(imgAnno.max()))
+        # imgAnno_uint8 = (imgAnno * 255).astype(np.uint8)
+        # imageio.imwrite('imgAnno.png', imgAnno_uint8)
+
+        # assert False; "dddd"
+
+        # print("viewpoint_cam.smpl_param['R']:{}".format(viewpoint_cam.smpl_param['R'].shape))
+        # print("viewpoint_cam.smpl_param['Th']:{}".format(viewpoint_cam.smpl_param['Th'].shape))
+        # # h_RT = torch.cat([(viewpoint_cam.smpl_param['R']), (viewpoint_cam.smpl_param['Th']).reshape(3,1)], -1)[None, None].cuda()
+        # RT = torch.cat([torch.tensor(viewpoint_cam.R), torch.tensor(viewpoint_cam.T).reshape(3,1)], -1)[None, None].cuda()
+        # print("viewpoint_cam.R.transpose().shape:{}".format(viewpoint_cam.R.transpose().shape))
+        # print("viewpoint_cam.T.shape:{}".format(viewpoint_cam.T.shape))
+        # print("RT:{}".format(RT.shape))
+        # # print("h_RT:{}".format(h_RT.shape))
+        # xyz = torch.repeat_interleave(torch.tensor(viewpoint_cam.world_vertex)[None, None], repeats=RT.shape[1], dim=1) #[bs, view_num, , 3]
+        # print("1: xyz:{}".format(xyz.shape))
+        # # print("h_RT[:, :, None, :, :3].shape:{}".format(h_RT[:, :, None, :, :3].shape))
+        # print("xyz[..., None].shape:{}".format(xyz[..., None].shape))
+        # # xyz = torch.matmul(h_RT[:, :, None, :, :3].float(), xyz[..., None].float()) + h_RT[:, :, None, :, 3:].float()
+        # print("2: xyz:{}".format(xyz.shape))
+        # xyz = torch.matmul(RT[:, :, None, :, :3].float(), xyz[..., None].float()) + RT[:, :, None, :, 3:].float()
+        # print("3: xyz:{}".format(xyz.shape))
+        # xyz = torch.matmul(torch.tensor(viewpoint_cam.K)[None, None][:, :, None].float().cuda(), xyz)[..., 0]
+        # print("4: xyz:{}".format(xyz.shape))
+        # xy = xyz[..., :2] / (xyz[..., 2:] + 1e-5)
+        # print("xy:{}".format(xy.shape))
+        # src_uv = xy.view(-1, *xy.shape[2:]).squeeze(0)
+        # print("src_uv:{}".format(src_uv.shape))
+        # print("src_uv:{}".format(src_uv[0]))
+
+        # points = src_uv.cpu().numpy()
+
+        # Assuming 'points' is your array of point coordinates with shape [778, 2]
+        # and 'image_width' and 'image_height' are the dimensions of your image
+
+        # image_width = 640
+        # image_height = 480
+
+        # print('points:{}'.format(points))
+
+        # # Check if any x coordinates are out of bounds
+        # x_out_of_bounds = np.any((points[:, 0] < 0) | (points[:, 0] >= image_width))
+
+        # # Check if any y coordinates are out of bounds
+        # y_out_of_bounds = np.any((points[:, 1] < 0) | (points[:, 1] >= image_height))
+
+        # # Print results
+        # print("Are any x coordinates out of bounds?", x_out_of_bounds)
+        # print("Are any y coordinates out of bounds?", y_out_of_bounds)
+
+        # if x_out_of_bounds or y_out_of_bounds:
+        #     print("Some points exceed the image boundaries.")
+        # else:
+        #     print("All points are within the image boundaries.")
+
+
+        # test_image = gt_image.clone().permute(1,2,0)
+        # # print("test_image:{}".format(test_image.shape))
+
+        # src_uv[:, 0] = torch.clamp(src_uv[:, 0], min=0, max=image_width - 1)
+        # src_uv[:, 1] = torch.clamp(src_uv[:, 1], min=0, max=image_height - 1)
+
+        # # Set the pixels at these points to [1, 1, 1]
+        # value_to_assign = torch.tensor([1, 1, 1], dtype=test_image.dtype, device=test_image.device)
+        # for x, y in src_uv:
+        #     # print(int(y), int(x))
+        #     # print(test_image[int(y), int(x)])
+        #     test_image[int(y), int(x)] = value_to_assign
+        # print("src_uv[0,:,1]:{}".format(src_uv[0,:,1].type(torch.LongTensor)))
+        # test_image[src_uv[0,:,1].type(torch.LongTensor), src_uv[0,:,0].type(torch.LongTensor)] = 1
+        # print("test_image:{}".format(test_image.shape))
+        # print(test_image.min(), test_image.max())
+        # if not torch.isfinite(test_image).all():
+        #     print("Test image contains NaN or infinite values.")
+        #     test_image = torch.nan_to_num(test_image)
+
+        # print("test_image:{}".format(test_image))
+        # assert False; "dddd"
+        # imageio.imwrite(f'vertex_img.png', (255*test_image).cpu().numpy().astype(np.uint8))
+        # assert False; "dddd"
+
         mask_loss = l2_loss(alpha[bound_mask==1], bkgd_mask[bound_mask==1])
 
         # crop the object region
@@ -116,9 +217,14 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         img_pred = image[:, y:y + h, x:x + w].unsqueeze(0)
         img_gt = gt_image[:, y:y + h, x:x + w].unsqueeze(0)
         # ssim loss
+        # import ipdb; ipdb.set_trace()
         ssim_loss = ssim(img_pred, img_gt)
         # lipis loss
         lpips_loss = loss_fn_vgg(img_pred, img_gt).reshape(-1)
+        # print("ssim_loss:{}".format(ssim_loss))
+        # print("lpips_loss:{}".format(lpips_loss))
+        # print("Ll1:{}".format(Ll1))
+        # print("mask_loss:{}".format(mask_loss))
 
         loss = Ll1 + 0.1 * mask_loss + 0.01 * (1.0 - ssim_loss) + 0.01 * lpips_loss
         loss.backward()
@@ -160,6 +266,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             if iteration < opt.densify_until_iter:
                 # Keep track of max radii in image-space for pruning
                 gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
+                # print("visibility_filter:{}".format(visibility_filter))
+                # print('gaussians.max_radii2D:{}'.format(gaussians.max_radii2D))
+                # print('radii:{}'.format(radii))
                 gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
 
                 if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:

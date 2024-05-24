@@ -8,3 +8,6 @@ tensorboard_3d
 screenshots
 assets/
 *.png
+mano
+mano_folder
+*log*

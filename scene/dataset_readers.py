@@ -22,13 +22,19 @@ import json
 import imageio
 import cv2
 import random
+import torchvision
+import pickle
+from torchvision.transforms import ToTensor
 from pathlib import Path
 from plyfile import PlyData, PlyElement
 from utils.sh_utils import SH2RGB
+from utils.mano_utils import forwardKinematics, project_3D_points, showHandJoints, apply_global_tfm_to_camera, apply_external_transformations
 from scene.gaussian_model import BasicPointCloud
 
 from smpl.smpl_numpy import SMPL
 from smplx.body_models import SMPLX
+
+from mano.mano_numpy import MANO
 
 from data.dna_rendering.dna_rendering_sample_code.SMCReader import SMCReader
 
@@ -86,7 +92,38 @@ def getNerfppNorm(cam_info):
 
 def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
     cam_infos = []
+    # print("cam_extrinsics", cam_extrinsics)
+
+    mano_model = MANO(left='right', model_dir='assets')
+
+    # SMPL in canonical space
+    big_pose_mano_param = {}
+    big_pose_mano_param['R'] = np.eye(3).astype(np.float32)
+    big_pose_mano_param['Th'] = np.zeros((1,3)).astype(np.float32)
+    big_pose_mano_param['shapes'] = np.zeros((1,10)).astype(np.float32)
+    big_pose_mano_param['poses'] = np.zeros((1,48)).astype(np.float32)
+
+    # 无手部的translation
+    _, big_pose_xyz_cam_openGL = forwardKinematics(big_pose_mano_param['poses'], big_pose_mano_param['Th'], big_pose_mano_param['shapes'])
+    # big_pose_xyz_cam_openGL = (np.array(big_pose_xyz_cam_openGL)).astype(np.float32)
+    # B = np.array([[1., 0., 0.], [0, -1., 0.], [0., 0., -1.]], dtype=np.float32)
+    # big_pose_xyz_cam = np.matmul(big_pose_xyz_cam_openGL, B.T)
+    big_pose_xyz = big_pose_xyz_cam_openGL.r
+
+    # print("big_pose_xyz_cam_openGL.shape:{}".format(big_pose_xyz_cam_openGL.shape))
+    # print(type(big_pose_xyz))
+    # print(isinstance(big_pose_xyz, np.ndarray))
+    big_pose_min_xyz = np.min(big_pose_xyz, axis=0)
+    big_pose_max_xyz = np.max(big_pose_xyz, axis=0)
+    big_pose_min_xyz -= 0.05
+    big_pose_max_xyz += 0.05
+    big_pose_world_bound = np.stack([big_pose_min_xyz, big_pose_max_xyz], axis=0)
+
+    flag = True
+
     for idx, key in enumerate(cam_extrinsics):
+        
+        # print("idx", idx, "key", key)
         sys.stdout.write('\r')
         # the exact output you're looking for:
         sys.stdout.write("Reading camera {}/{}".format(idx+1, len(cam_extrinsics)))
@@ -98,14 +135,40 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
         width = intr.width
 
         uid = intr.id
-        R = np.transpose(qvec2rotmat(extr.qvec))
-        T = np.array(extr.tvec)
+
+        # cTw
+        c2w_R = qvec2rotmat(extr.qvec)
+        c2w_R = np.array(c2w_R)
+        c2w_T = np.array(extr.tvec).reshape(3, 1)
+        c2w = np.eye(4)
+        c2w[:3, :3] = c2w_R
+        c2w[:3, 3:4] = c2w_T
+
+
+        if flag:
+            # big_pose_xyz_wor = np.matmul(big_pose_xyz_cam, np.transpose(c2w_R)) + c2w_T.reshape(3)
+            # big_pose_xyz_wor = big_pose_xyz_cam.copy()
+            # print("big_pose_xyz_wor.shape:{}".format(big_pose_xyz_wor.shape))
+            # big_pose_min_xyz = np.min(big_pose_xyz_cam, axis=0)
+            # big_pose_max_xyz = np.max(big_pose_xyz_cam, axis=0)
+            # big_pose_min_xyz -= 0.05
+            # big_pose_max_xyz += 0.05
+            # big_pose_world_bound = np.stack([big_pose_min_xyz, big_pose_max_xyz], axis=0)
+            flag = False 
+
+        
+        w2c = np.linalg.inv(c2w)
+        # R camera to world; R is stored transposed due to 'glm' in CUDA code
+        R = np.transpose(w2c[:3,:3])
+        # T world to camera
+        T = w2c[:3, 3]
 
         if intr.model=="SIMPLE_PINHOLE":
             focal_length_x = intr.params[0]
             FovY = focal2fov(focal_length_x, height)
             FovX = focal2fov(focal_length_x, width)
         elif intr.model=="PINHOLE":
+            # TODO: check if this is correct
             focal_length_x = intr.params[0]
             focal_length_y = intr.params[1]
             FovY = focal2fov(focal_length_y, height)
@@ -113,12 +176,76 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
         else:
             assert False, "Colmap camera model not handled: only undistorted datasets (PINHOLE or SIMPLE_PINHOLE cameras) supported!"
 
-        image_path = os.path.join(images_folder, os.path.basename(extr.name))
-        image_name = os.path.basename(image_path).split(".")[0]
-        image = Image.open(image_path)
+        K = np.array([[focal_length_x, 0, intr.params[2]], [0, focal_length_x, intr.params[3]], [0, 0, 1]]).astype('float32')
 
-        cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
-                              image_path=image_path, image_name=image_name, width=width, height=height)
+
+        image_path = os.path.join(images_folder, os.path.basename(extr.name))
+        mask_path = image_path.replace("HO3D_v2", "HO3D_v2_Segmentations_rendered").replace("images", "hand_seg").replace(".png", ".jpg")
+        image_name = os.path.basename(image_path).split(".")[0]
+        I_image = Image.open(image_path)
+        image = ToTensor()(I_image)
+        I_mask = Image.open(mask_path)
+        mask = ToTensor()(I_mask)
+        single_channel_mask = I_mask.convert("L")
+        tensor_single_channel_mask = ToTensor()(I_mask.convert("L"))
+        # tensor_single_channel_mask = ToTensor()(single_channel_mask)
+        # print('np.unique((image * mask).numpy()):{}'.format(np.unique((image * mask).numpy())))
+        # print('np.unique((image * tensor_single_channel_mask).numpy()):{}'.format(np.unique((image * tensor_single_channel_mask).numpy())))
+        seg_image = torchvision.transforms.ToPILImage()(image * tensor_single_channel_mask)
+
+
+        meta_pth = image_path.replace("images", "meta").replace(".png", ".pkl")
+        with open(meta_pth, 'rb') as f:
+            meta_data = pickle.load(f)
+        handpose = meta_data['handPose'].astype('float32')
+        # handpose_ori = handpose.copy()
+        handshape = meta_data['handBeta'].astype('float32')
+        handTrans = meta_data['handTrans'].astype('float32')
+        
+        smpl_param = {}
+        # TODO: 是否需要加入手部的旋转？
+        B = np.array([[1., 0., 0.], [0, -1., 0.], [0., 0., -1.]], dtype=np.float32)
+        smpl_E = apply_global_tfm_to_camera(c2w, handpose[:3], meta_data['handTrans'], B)
+        smpl_param['R'] = np.transpose(smpl_E[:3,:3].astype(np.float32))
+        smpl_param['Th'] = smpl_E[:3,3].astype(np.float32)
+        smpl_param['shapes'] = handshape.reshape(1,10)
+        wrist_rot, _ = cv2.Rodrigues(np.transpose(smpl_param['R']))
+
+        # stratgy1:
+        _, xyz_openGL = forwardKinematics(handpose, handTrans, handshape)
+        B = np.array([[1., 0., 0.], [0, -1., 0.], [0., 0., -1.]], dtype=np.float32)
+        xyz_cam = np.matmul(xyz_openGL, B.T)
+        xyz = np.matmul(xyz_cam, np.transpose(c2w_R)) + c2w_T.reshape(3)
+
+        handpose[:3] = wrist_rot.reshape(3,)
+        smpl_param['poses'] = handpose.reshape(1,48)
+        # smpl_param['R'] = cv2.Rodrigues(smpl_param['poses'][0,:3])[0]
+        # smpl_param['Th'] = handTrans.reshape(1,3)
+        # smpl_param['shapes'] = handshape.reshape(1,10)
+
+        # obtain the original bounds for point sampling
+        min_xyz = np.min(xyz, axis=0)
+        max_xyz = np.max(xyz, axis=0)
+        min_xyz -= 0.05
+        max_xyz += 0.05
+        world_bound = np.stack([min_xyz, max_xyz], axis=0)
+
+        # get bounding mask and bcakground mask
+        bound_mask = get_bound_2d_mask(world_bound, K, w2c[:3], height, width)
+
+        # bound_mask = np.array(bound_mask*255.0, dtype=np.byte)
+        bound_mask = Image.fromarray(np.array(bound_mask*255.0, dtype=np.byte))
+        bound_mask.save("/data/home/acw773/GauHuman/img1.png","PNG")
+        bkgd_mask = single_channel_mask
+
+        pose_index = 1
+
+        cam_info = CameraInfo(uid=uid, pose_id=pose_index, R=R, T=T, K=K, FovY=FovY, FovX=FovX, image=I_image,
+                              image_path=image_path, image_name=image_name, bkgd_mask=bkgd_mask,
+                              bound_mask=bound_mask, width=width, height=height,
+                              smpl_param=smpl_param, world_vertex=xyz, world_bound=world_bound,
+                              big_pose_smpl_param=big_pose_mano_param, big_pose_world_vertex=big_pose_xyz, 
+                              big_pose_world_bound=big_pose_world_bound)
         cam_infos.append(cam_info)
     sys.stdout.write('\n')
     return cam_infos
@@ -127,6 +254,8 @@ def fetchPly(path):
     plydata = PlyData.read(path)
     vertices = plydata['vertex']
     positions = np.vstack([vertices['x'], vertices['y'], vertices['z']]).T
+    # print("positions.shape:{}".format(positions.shape))
+    # print("positions:{}".format(positions))
     colors = np.vstack([vertices['red'], vertices['green'], vertices['blue']]).T / 255.0
     normals = np.vstack([vertices['nx'], vertices['ny'], vertices['nz']]).T
     return BasicPointCloud(points=positions, colors=colors, normals=normals)

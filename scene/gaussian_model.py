@@ -26,6 +26,8 @@ import torch.nn.functional as F
 from nets.mlp_delta_body_pose import BodyPoseRefiner
 from nets.mlp_delta_weight_lbs import LBSOffsetDecoder
 
+from utils.mano_utils import project3D_2_2D
+
 class GaussianModel:
 
     def setup_functions(self):
@@ -49,7 +51,7 @@ class GaussianModel:
         self.rotation_activation = torch.nn.functional.normalize
 
 
-    def __init__(self, sh_degree : int, smpl_type : str, motion_offset_flag : bool, actor_gender: str):
+    def __init__(self, sh_degree : int, smpl_type : str, motion_offset_flag : bool, motion_flag : bool,  actor_gender: str):
         self.active_sh_degree = 0
         self.max_sh_degree = sh_degree  
         self._xyz = torch.empty(0)
@@ -75,14 +77,19 @@ class GaussianModel:
             neutral_smpl_path = os.path.join('assets/models/smplx', f'SMPLX_{actor_gender.upper()}.npz')
             params_init = dict(np.load(neutral_smpl_path, allow_pickle=True))
             self.SMPL_NEUTRAL = SMPL_to_tensor(params_init, device=self.device)
+        elif smpl_type == 'mano':
+            neutral_smpl_path = os.path.join('assets', f'MANO_{actor_gender.upper()}.pkl')
+            self.SMPL_NEUTRAL = SMPL_to_tensor(read_pickle(neutral_smpl_path), device=self.device)
 
         # load knn module
         self.knn = KNN(k=1, transpose_mode=True)
         self.knn_near_2 = KNN(k=2, transpose_mode=True)
 
+        self.motion_flag = motion_flag
         self.motion_offset_flag = motion_offset_flag
         if self.motion_offset_flag:
             # load pose correction module
+            # import ipdb; ipdb.set_trace()
             total_bones = self.SMPL_NEUTRAL['weights'].shape[-1]
             self.pose_decoder = BodyPoseRefiner(total_bones=total_bones, embedding_size=3*(total_bones-1), mlp_width=128, mlp_depth=2)
             self.pose_decoder.to(self.device)
@@ -571,7 +578,9 @@ class GaussianModel:
             self.prune_points(prune_filter)
 
     def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size, kl_threshold=0.4, t_vertices=None, iter=None):
-        grads = self.xyz_gradient_accum / self.denom
+        grads = self.xyz_gradient_accum / (self.denom + 1e-8)
+        # import ipdb; ipdb.set_trace()
+        print("grads:{}".format(grads))
         grads[grads.isnan()] = 0.0
 
         # self.densify_and_clone(grads, max_grad, extent)
@@ -625,26 +634,48 @@ class GaussianModel:
         return kl_div
 
     def add_densification_stats(self, viewspace_point_tensor, update_filter):
+        # import ipdb; ipdb.set_trace()
+        # print("viewspace_point_tensor:{}".format(viewspace_point_tensor))
+        # print("self.xyz_gradient_accum:{}\n".format(self.xyz_gradient_accum))
+        # print("update_filter:{}".format(update_filter))
+        if torch.sum(viewspace_point_tensor) > 1e-4:
+            import ipdb; ipdb.set_trace()
         self.xyz_gradient_accum[update_filter] += torch.norm(viewspace_point_tensor.grad[update_filter,:2], dim=-1, keepdim=True)
         self.denom[update_filter] += 1
 
-    def coarse_deform_c2source(self, query_pts, params, t_params, t_vertices, lbs_weights=None, correct_Rs=None, return_transl=False):
+    def coarse_deform_c2source(self, viewpoint_camera, query_pts, params, t_params, t_vertices, lbs_weights=None, correct_Rs=None, return_transl=False):
+    
+        # query_pts = eans3D[None]
+        # params = viewpoint_camera.smpl_param
+        # t_params = viewpoint_camera.big_pose_smpl_param,
+        # t_vertices = viewpoint_camera.big_pose_world_vertex[None]
+        # lbs_weights=lbs_weights, 
+        # correct_Rs=correct_Rs, 
+        # return_transl=return_smpl_rot
+
+        print("1_query_pts:{}".format(query_pts))
+
+        project3D_2_2D(query_pts, viewpoint_camera, '0_1') 
+        
         bs = query_pts.shape[0]
         joints_num = self.SMPL_NEUTRAL['weights'].shape[-1]
         vertices_num = t_vertices.shape[1]
-        # Find nearest smpl vertex
-        smpl_pts = t_vertices
 
+        # Find nearest smpl vertex, all under world space
+        smpl_pts = t_vertices
         _, vert_ids = self.knn(smpl_pts.float(), query_pts.float())
+
         if lbs_weights is None:
             bweights = self.SMPL_NEUTRAL['weights'][vert_ids].view(*vert_ids.shape[:2], joints_num)#.cuda() # [bs, points_num, joints_num]
         else:
+            # ensure the weights remain normalized and non-negative
             bweights = self.SMPL_NEUTRAL['weights'][vert_ids].view(*vert_ids.shape[:2], joints_num)
             bweights = torch.log(bweights + 1e-9) + lbs_weights
             bweights = F.softmax(bweights, dim=-1)
 
         ### From Big To T Pose
         big_pose_params = t_params
+        # TODO: find what A means?
         A, R, Th, joints = get_transform_params_torch(self.SMPL_NEUTRAL, big_pose_params)
         A = torch.matmul(bweights, A.reshape(bs, joints_num, -1))
         A = torch.reshape(A, (bs, -1, 4, 4))
@@ -686,6 +717,12 @@ class GaussianModel:
             if return_transl: 
                 translation += shape_offset
 
+            print("2_query_pts:{}".format(query_pts))
+
+            project3D_2_2D(query_pts, viewpoint_camera, '0_2') 
+
+
+            # 从这里开始需要关注: From normal shape to target shape
             posedirs = self.SMPL_NEUTRAL['posedirs']#.cuda().float()
             pose_ = params['poses']
             ident = torch.eye(3).cuda().float()
@@ -697,6 +734,8 @@ class GaussianModel:
                 rot_mats_no_root = torch.matmul(rot_mats_no_root.reshape(-1, 3, 3), correct_Rs.reshape(-1, 3, 3)).reshape(-1, joints_num-1, 3, 3)
                 rot_mats = torch.cat([rot_mats[:, 0:1], rot_mats_no_root], dim=1)
 
+            # import ipdb; ipdb.set_trace()
+
             pose_feature = (rot_mats[:, 1:, :, :] - ident).view([batch_size, -1])#.cuda()
             pose_offsets = torch.matmul(pose_feature.unsqueeze(1), posedirs.view(vertices_num*3, -1).transpose(1,0).unsqueeze(0)).view(batch_size, -1, 3)
             pose_offsets = torch.gather(pose_offsets, 1, vert_ids.expand(-1, -1, 3)) # [bs, N_rays*N_samples, 3]
@@ -705,7 +744,15 @@ class GaussianModel:
             if return_transl: 
                 translation += pose_offsets
 
+            project3D_2_2D(query_pts, viewpoint_camera, '0_3') 
+
+            # import ipdb; ipdb.set_trace()
+        
+        # query_pts: world coordinate
+
         # get tar_pts, smpl space source pose
+        # R = params['R']
+        # Th = params['Th']
         A, R, Th, joints = get_transform_params_torch(self.SMPL_NEUTRAL, params, rot_mats=rot_mats)
 
         self.s_A = A
@@ -713,6 +760,9 @@ class GaussianModel:
         A = torch.reshape(A, (bs, -1, 4, 4))
         can_pts = torch.matmul(A[..., :3, :3], query_pts[..., None]).squeeze(-1)
         smpl_src_pts = can_pts + A[..., :3, 3]
+
+        project3D_2_2D(smpl_src_pts, viewpoint_camera, '0_4') 
+        project3D_2_2D(can_pts, viewpoint_camera, '0_5') 
         
         transforms = torch.matmul(A[..., :3, :3], transforms)
 
@@ -720,8 +770,17 @@ class GaussianModel:
             translation = torch.matmul(A[..., :3, :3], translation[..., None]).squeeze(-1) + A[..., :3, 3]
 
         # transform points from the smpl space to the world space
-        R_inv = torch.inverse(R)
-        world_src_pts = torch.matmul(smpl_src_pts, R_inv) + Th
+        # 从smpl空间转换到world空间，smpl对应的
+        print('R:{}'.format(R))
+        # R_inv = torch.inverse(R)
+        R_trans = torch.transpose(R, 0, 1)
+        # print('R_inv:{}'.format(R_inv))
+        world_src_pts = torch.matmul(smpl_src_pts, R_trans) + Th
+
+        project3D_2_2D(world_src_pts, viewpoint_camera, '0_6') 
+        # world_src_pts = torch.matmul(smpl_src_pts, R) + Th
+
+        # import ipdb; ipdb.set_trace()
         
         transforms = torch.matmul(R, transforms)
 
@@ -773,8 +832,8 @@ def batch_rodrigues_torch(poses):
 def get_rigid_transformation_torch(rot_mats, joints, parents):
     """
     rot_mats: bs x 24 x 3 x 3
-    joints: bs x 24 x 3
-    parents: 24
+    joints: bs x 24 x 3; joints 位置
+    parents: 24; 父节点
     """
     # obtain the relative joints
     bs, joints_num = joints.shape[0:2]
@@ -782,6 +841,7 @@ def get_rigid_transformation_torch(rot_mats, joints, parents):
     rel_joints[:, 1:] -= joints[:, parents[1:]]
 
     # create the transformation matrix
+    # transforms_mat: bs x 24 x 4 x 4
     transforms_mat = torch.cat([rot_mats, rel_joints[..., None]], dim=-1)
     padding = torch.zeros([bs, joints_num, 1, 4], device=rot_mats.device)  #.to(rot_mats.device)
     padding[..., 3] = 1
@@ -806,18 +866,28 @@ def get_rigid_transformation_torch(rot_mats, joints, parents):
 def get_transform_params_torch(smpl, params, rot_mats=None, correct_Rs=None):
     """ obtain the transformation parameters for linear blend skinning
     """
+    # self.SMPL_NEUTRAL, big_pose_params
+
     v_template = smpl['v_template']
 
     # add shape blend shapes
     shapedirs = smpl['shapedirs']
     betas = params['shapes']
     # v_shaped = v_template[None] + torch.sum(shapedirs[None] * betas[:,None], axis=-1).float()
+    # v_template: The base or template vertex positions of the model without any deformations.
+    # J_regressor: The joint regressor matrix that maps vertex positions to joint locations.
+    # shapedirs: Shape blend shapes that allow the template mesh to deform to fit the shape parameters.
+
+    # computes the vertex positions adjusted for individual body shape. 
     v_shaped = v_template[None] + torch.sum(shapedirs[None][...,:betas.shape[-1]] * betas[:,None], axis=-1).float()
+
+    # import ipdb; ipdb.set_trace()
 
     if rot_mats is None:
         # add pose blend shapes
         poses = params['poses'].reshape(-1, 3)
-        # bs x 24 x 3 x 3
+        # bs x 16 x 3 x 3
+        # including the wrist rotation, root
         rot_mats = batch_rodrigues_torch(poses).view(params['poses'].shape[0], -1, 3, 3)
 
         if correct_Rs is not None:
@@ -826,6 +896,7 @@ def get_transform_params_torch(smpl, params, rot_mats=None, correct_Rs=None):
             rot_mats = torch.cat([rot_mats[:, 0:1], rot_mats_no_root], dim=1)
 
     # obtain the joints
+    # Calculates the positions of the joints based on the shaped vertex positions (v_shaped)
     joints = torch.matmul(smpl['J_regressor'][None], v_shaped) # [bs, 24 ,3]
 
     # obtain the rigid transformation
