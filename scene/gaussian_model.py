@@ -577,10 +577,10 @@ class GaussianModel:
             prune_filter = torch.cat((selected_pts_mask, torch.zeros(new_xyz.shape[0], device="cuda", dtype=bool)))
             self.prune_points(prune_filter)
 
-    def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size, kl_threshold=0.4, t_vertices=None, iter=None):
+    def densify_and_prune(self, gaussians_num, max_grad, min_opacity, extent, max_screen_size, kl_threshold=0.4, t_vertices=None, iter=None):
         grads = self.xyz_gradient_accum / (self.denom + 1e-8)
         # import ipdb; ipdb.set_trace()
-        print("grads:{}".format(grads))
+        # print("grads:{}".format(grads))
         grads[grads.isnan()] = 0.0
 
         # self.densify_and_clone(grads, max_grad, extent)
@@ -590,7 +590,7 @@ class GaussianModel:
         self.kl_merge(grads, max_grad, extent, 0.1)
 
         prune_mask = (self.get_opacity < min_opacity).squeeze()
-        if max_screen_size:
+        if max_screen_size and gaussians_num>200000:
             big_points_vs = self.max_radii2D > max_screen_size
             big_points_ws = self.get_scaling.max(dim=1).values > 0.1 * extent
             prune_mask = torch.logical_or(torch.logical_or(prune_mask, big_points_vs), big_points_ws)
@@ -653,9 +653,10 @@ class GaussianModel:
         # correct_Rs=correct_Rs, 
         # return_transl=return_smpl_rot
 
-        print("1_query_pts:{}".format(query_pts))
+        # print("1_query_pts:{}".format(query_pts))
+        # print("1_query_pts.shape:{}".format(query_pts.shape))
 
-        project3D_2_2D(query_pts, viewpoint_camera, '0_1') 
+        # project3D_2_2D(query_pts, viewpoint_camera, '0_1') 
         
         bs = query_pts.shape[0]
         joints_num = self.SMPL_NEUTRAL['weights'].shape[-1]
@@ -717,9 +718,9 @@ class GaussianModel:
             if return_transl: 
                 translation += shape_offset
 
-            print("2_query_pts:{}".format(query_pts))
+            # print("2_query_pts:{}".format(query_pts))
 
-            project3D_2_2D(query_pts, viewpoint_camera, '0_2') 
+            # project3D_2_2D(query_pts, viewpoint_camera, '0_2') 
 
 
             # 从这里开始需要关注: From normal shape to target shape
@@ -744,9 +745,7 @@ class GaussianModel:
             if return_transl: 
                 translation += pose_offsets
 
-            project3D_2_2D(query_pts, viewpoint_camera, '0_3') 
-
-            # import ipdb; ipdb.set_trace()
+            # project3D_2_2D(query_pts, viewpoint_camera, '0_3') 
         
         # query_pts: world coordinate
 
@@ -759,10 +758,27 @@ class GaussianModel:
         A = torch.matmul(bweights, self.s_A.reshape(bs, joints_num, -1))
         A = torch.reshape(A, (bs, -1, 4, 4))
         can_pts = torch.matmul(A[..., :3, :3], query_pts[..., None]).squeeze(-1)
+        # print("can_pts.shape:{}".format(can_pts.shape))
+        # print("A.shape:{}".format(A.shape))
         smpl_src_pts = can_pts + A[..., :3, 3]
+        smpl_src_pts_1 = (smpl_src_pts + torch.tensor(params['Th'].reshape((1, 3))).cuda()).squeeze(0)
+        B = torch.tensor(np.array([[1., 0., 0.], [0, -1., 0.], [0., 0., -1.]], dtype=np.float32)).cuda()
+        smpl_src_pts_1 = torch.matmul(smpl_src_pts_1, B.T)
+        # wtc = torch.tensor(viewpoint_camera.R[:3, :3].astype(np.float32)).cuda()
+        E = np.eye(4)
+        E[:3, :3] = np.transpose(viewpoint_camera.R)
+        E[:3, 3] = viewpoint_camera.T
+        ctw = np.linalg.inv(E)
+        ctw_R = torch.tensor(ctw[:3, :3].astype(np.float32)).cuda()
+        ctw_T = torch.tensor(ctw[:3, 3].astype(np.float32)).cuda()
+        # import ipdb; ipdb.set_trace()
+        smpl_src_pts_1_wor = torch.matmul(smpl_src_pts_1, ctw_R.T) + ctw_T
 
-        project3D_2_2D(smpl_src_pts, viewpoint_camera, '0_4') 
-        project3D_2_2D(can_pts, viewpoint_camera, '0_5') 
+
+
+        # for test, ignore
+        # project3D_2_2D(smpl_src_pts_1_wor, viewpoint_camera, '0_4') 
+        # project3D_2_2D(can_pts, viewpoint_camera, '0_5') 
         
         transforms = torch.matmul(A[..., :3, :3], transforms)
 
@@ -771,13 +787,13 @@ class GaussianModel:
 
         # transform points from the smpl space to the world space
         # 从smpl空间转换到world空间，smpl对应的
-        print('R:{}'.format(R))
+        # print('R:{}'.format(R))
         # R_inv = torch.inverse(R)
         R_trans = torch.transpose(R, 0, 1)
         # print('R_inv:{}'.format(R_inv))
-        world_src_pts = torch.matmul(smpl_src_pts, R_trans) + Th
+        world_src_pts = torch.matmul(smpl_src_pts_1_wor, R_trans) + Th
 
-        project3D_2_2D(world_src_pts, viewpoint_camera, '0_6') 
+        # project3D_2_2D(world_src_pts, viewpoint_camera, '0_6') 
         # world_src_pts = torch.matmul(smpl_src_pts, R) + Th
 
         # import ipdb; ipdb.set_trace()
@@ -785,9 +801,9 @@ class GaussianModel:
         transforms = torch.matmul(R, transforms)
 
         if return_transl: 
-            translation = torch.matmul(translation, R_inv).squeeze(-1) + Th
+            translation = torch.matmul(translation, R_trans).squeeze(-1) + Th
 
-        return smpl_src_pts, world_src_pts, bweights, transforms, translation
+        return smpl_src_pts_1_wor, world_src_pts, bweights, transforms, translation
 
 def read_pickle(pkl_path):
     with open(pkl_path, 'rb') as f:

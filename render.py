@@ -44,13 +44,16 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
     elapsed_time = 0
 
     for _, view in enumerate(tqdm(views, desc="Rendering progress")):
+        # print("view.key", view.key)
         gt = view.original_image[0:3, :, :].cuda()
         bound_mask = view.bound_mask
+        # import ipdb; ipdb.set_trace()
         transforms, translation = smpl_rot[name][view.pose_id]['transforms'], smpl_rot[name][view.pose_id]['translation']
 
         # Start timer
         start_time = time.time() 
-        render_output = render(view, gaussians, pipeline, background, transforms=transforms, translation=translation)
+        render_output = render(view, gaussians, pipeline, background)
+        # render_output = render(view, gaussians, pipeline, background, transforms=transforms, translation=translation)
         rendering = render_output["render"]
         
         # end time
@@ -58,7 +61,9 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
         # Calculate elapsed time
         elapsed_time += end_time - start_time
 
-        rendering.permute(1,2,0)[bound_mask[0]==0] = 0 if background.sum().item() == 0 else 1
+        # rendering.permute(1,2,0)[bound_mask[0]==0] = 0 if background.sum().item() == 0 else 1
+
+        rendering.permute(1,2,0)
 
         rgbs.append(rendering)
         rgbs_gt.append(gt)
@@ -92,7 +97,7 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
 
 def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParams, skip_train : bool, skip_test : bool):
     with torch.no_grad():
-        gaussians = GaussianModel(dataset.sh_degree, dataset.smpl_type, dataset.motion_offset_flag, dataset.actor_gender)
+        gaussians = GaussianModel(dataset.sh_degree, dataset.smpl_type, dataset.motion_offset_flag, dataset.motion_flag, dataset.actor_gender)
         scene = Scene(dataset, gaussians, load_iteration=iteration, shuffle=False)
 
         bg_color = [1,1,1] if dataset.white_background else [0, 0, 0]

@@ -121,10 +121,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
 
         # handKps = project_3D_points(viewpoint_cam.K, viewpoint_cam.world_vertex, is_OpenGL_coords=True)
-        # test_image = (gt_image.clone().permute(1,2,0)*255)
+        test_image = (gt_image.clone().permute(1,2,0)*255)
         # print("test_image:{}".format(test_image))
         # print("test_image:{}".format(test_image.shape))
-        # imageio.imwrite('test_image.png', test_image.cpu().numpy().astype(np.uint8))
+        imageio.imwrite('gt_image.png', test_image.cpu().numpy().astype(np.uint8))
         # print("viewpoint_cam.image_path:{}".format(viewpoint_cam.image_path))
         # imgAnno = showHandJoints(test_image, handKps[jointsMapManoToSimple]) 
         # imgAnno = imgAnno / imgAnno.max()
@@ -266,18 +266,23 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             if iteration < opt.densify_until_iter:
                 # Keep track of max radii in image-space for pruning
                 gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
-                # print("visibility_filter:{}".format(visibility_filter))
-                # print('gaussians.max_radii2D:{}'.format(gaussians.max_radii2D))
-                # print('radii:{}'.format(radii))
                 gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
 
-                if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
+                if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0 and gaussians.get_xyz.shape[0]<360000:
                     size_threshold = 20 if iteration > opt.opacity_reset_interval else None
-                    gaussians.densify_and_prune(opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold, kl_threshold=0.4, t_vertices=viewpoint_cam.big_pose_world_vertex, iter=iteration)
+                    gaussians.densify_and_prune(gaussians.get_xyz.shape[0], opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold, kl_threshold=0.4, t_vertices=viewpoint_cam.big_pose_world_vertex, iter=iteration)
                     # gaussians.densify_and_prune(opt.densify_grad_threshold, 0.01, scene.cameras_extent, 1)
                 
                 if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                     gaussians.reset_opacity()
+
+                # if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0 and gaussians.get_xyz.shape[0]<360000:
+                    # size_threshold = 20 if iteration > opt.opacity_reset_interval else None
+                    # gaussians.densify(densify_threshold, opacity_threshold, scene.cameras_extent, size_threshold, 5, 5, scene.model_path, iteration, stage)
+                # if iteration > opt.pruning_from_iter and iteration % opt.pruning_interval == 0 and gaussians.get_xyz.shape[0]>200000:
+                #     size_threshold = 20 if iteration > opt.opacity_reset_interval else None
+                #     gaussians.prune(gaussians.get_xyz.shape[0], densify_threshold, opacity_threshold, scene.cameras_extent, size_threshold)
+                    
 
             # Optimizer step
             if iteration < opt.iterations:
@@ -392,8 +397,8 @@ if __name__ == "__main__":
     parser.add_argument('--port', type=int, default=6009)
     parser.add_argument('--debug_from', type=int, default=-1)
     parser.add_argument('--detect_anomaly', action='store_true', default=False)
-    parser.add_argument("--test_iterations", nargs="+", type=int, default=[1_200, 2_000, 3_000, 7_000, 30_000])
-    parser.add_argument("--save_iterations", nargs="+", type=int, default=[1_200, 2_000, 3_000, 7_000, 30_000])
+    parser.add_argument("--test_iterations", nargs="+", type=int, default=[1_200, 2_000, 3_000, 4_000, 5_000, 7_000, 30_000])
+    parser.add_argument("--save_iterations", nargs="+", type=int, default=[1_200, 2_000, 3_000, 4_000, 5_000, 7_000, 30_000])
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
     parser.add_argument("--start_checkpoint", type=str, default = None)

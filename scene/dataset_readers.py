@@ -240,7 +240,7 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
 
         pose_index = 1
 
-        cam_info = CameraInfo(uid=uid, pose_id=pose_index, R=R, T=T, K=K, FovY=FovY, FovX=FovX, image=I_image,
+        cam_info = CameraInfo(uid=uid, pose_id=pose_index, R=R, T=T, K=K, FovY=FovY, FovX=FovX, image=seg_image,
                               image_path=image_path, image_name=image_name, bkgd_mask=bkgd_mask,
                               bound_mask=bound_mask, width=width, height=height,
                               smpl_param=smpl_param, world_vertex=xyz, world_bound=world_bound,

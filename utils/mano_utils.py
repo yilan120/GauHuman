@@ -21,7 +21,7 @@ def project3D_2_2D(means3D, viewpoint_camera, flag):
     # imageio.imwrite('test_image.png', test_image)
     
 
-    print("!!!!!!means3D: ", means3D.shape)
+    # print("!!!!!!means3D: ", means3D.shape)
 
     points_3D = means3D.cpu().detach().numpy()
     if len(points_3D.shape) == 3:
@@ -34,7 +34,7 @@ def project3D_2_2D(means3D, viewpoint_camera, flag):
     points_2D_hom_cam = np.dot(points_3D_hom, E.T)
     points_2D_hom_wor = np.dot(points_2D_hom_cam, K.T)
     points_2D = points_2D_hom_wor[:, :2] / points_2D_hom_wor[:, 2].reshape(-1, 1)
-    print(points_2D)
+    # print(points_2D)
 
     # # Check if any points are out of bounds
     # x_out_of_bounds = np.any((points_2D[:, 0] < 0) | (points_2D[:, 0] >= 640))
@@ -52,7 +52,7 @@ def project3D_2_2D(means3D, viewpoint_camera, flag):
     for (x, y) in points_2D:
         cv2.circle(test_image, (int(x), int(y)), radius=2, color=(0, 0, 255), thickness=-1)  # Red points
     cv2.imwrite('projected_points_{}.png'.format(flag), test_image)
-    print("write to image: projected_points_{}.png".format(flag))
+    # print("write to image: projected_points_{}.png".format(flag))
 
 
     return 
@@ -81,17 +81,14 @@ def apply_global_tfm_to_camera(E, Rh, Th, B):
     global_trans = Th
     global_tfms[:3, :3] = global_rot_OpenGL
     global_tfms[:3, 3] = global_trans
-    B_4x4 = np.eye(4, dtype=np.float32)  # Create a 4x4 identity matrix
-    B_4x4[:3, :3] = B 
 
-    hTc = np.dot(global_tfms, B_4x4)
-
-    hTw = np.dot(E, hTc)
-
+    # B_4x4 = np.eye(4, dtype=np.float32)  # Create a 4x4 identity matrix
+    # B_4x4[:3, :3] = B 
+    # hTc = np.dot(global_tfms, B_4x4)
+    # hTw = np.dot(E, hTc)
     # np.linalg.inv(global_tfms), A-1 : hand to camera
-
-    # return E.dot(global_tfms)
-    return hTw
+    # return hTw
+    return global_tfms
 
 
 

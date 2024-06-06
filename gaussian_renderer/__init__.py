@@ -85,6 +85,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
                     viewpoint_camera.big_pose_world_vertex[None], lbs_weights=lbs_weights, correct_Rs=correct_Rs, return_transl=return_smpl_rot)
                 means3D = s_means3D
             else:
+                print("DID NOT GET into the model, please attention!")
                 correct_Rs = None
                 means3D = torch.matmul(transforms, means3D[..., None]).squeeze(-1) + translation
         means3D = means3D.squeeze()
@@ -94,7 +95,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         # Visualization
         project3D_2_2D(means3D, viewpoint_camera, '1') 
         visibility = mark_visible(means3D.cpu().detach().numpy(), (viewpoint_camera.world_view_transform).cpu().numpy(), (viewpoint_camera.projection_matrix).cpu().numpy(), '1')
-        print("Visibility_1:", visibility)
+        # print("Visibility_1:", visibility)
 
     # Visualization
     # project3D_2_2D(means3D, viewpoint_camera, '1') 
@@ -153,7 +154,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         cov3D_precomp = cov3D_precomp)
     # import ipdb; ipdb.set_trace()
 
-    print("radii: ", radii)
+    # print("radii: ", radii)
 
     # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
     # They will be excluded from value updates used in the splitting criteria.
